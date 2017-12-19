@@ -77,7 +77,7 @@ class MoyaDemoTests: XCTestCase {
         
         Provider.rx.request(.allposts)
             .filterSuccessfulStatusCodes()
-            .retryWithAuthIfNeeded()
+            .retryWithAuthIfNeeded(limit:3)
             .map([Post].self)
             .subscribe(onSuccess: { posts in
                 print("Posts \(posts)")

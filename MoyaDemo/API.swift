@@ -11,36 +11,56 @@ import RxSwift
 import Moya
 
 extension PrimitiveSequence where TraitType == SingleTrait, ElementType == Response {
-    /// Tries to refresh auth token on 401 errors and retry the request.
-    /// If the refresh fails, the signal errors.
-    public func retryWithAuthIfNeeded() ->  Single<Response> {
-        return self.retryWhen{ (e: Observable<Error>) in
-            Observable.zip(e, Observable.range(start: 1, count: 3), resultSelector: { $1 })
-                .flatMap { i in
-                    return Provider.rx.request(.login(email: "abc@def.com",password:"secret"))
-                        .filterSuccessfulStatusAndRedirectCodes()
-                        .map(Token.self)
-                        .catchError {  error  in
-                            if case MoyaError.statusCode(let response) = error  {
-                                if response.statusCode == 401 {
-                                    // Logout
-                                    do {
-                                        try UserService.logOut()
-                                    } catch _ {
-                                        print("Failed to logout")
-                                    }
+    /// Try maximum `limit` times. if status is 401 first refresh the receipt
+    /// If error code is not 401 try again with limit
+    /// - Parameter limit: how many tries
+    /// - Returns: Single Response
+    public func retryWithAuthIfNeeded(limit:Int) -> Single<E> {
+        return self.retryWhen{ errors in
+            return errors.enumerated().flatMap{ (retryCount, error) -> Single<String> in
+                print("Retry Count: \(retryCount)")
+                // We can retry with and without token maximum `limit` times!
+                if retryCount < limit {
+                    // we will decide what kind of error it is
+                    // if it is 401 we will try with refresh
+                    if  case MoyaError.statusCode(let response) = error, response.statusCode == 401 {
+                        print("Error is 401 we should try with Refresh")
+                        return Provider.rx.request(.login(email: "abc@def.com",password:"secret"))
+                            .filterSuccessfulStatusAndRedirectCodes()
+                            .map(Token.self)
+                            .catchError { error -> Single<Token> in
+                                print("Error refreshing token")
+                                // Try once again if we have the user
+                                if let user = UserService.sharedInstance.getUser() {
+                                    return Single.just(Token(token: user.token))
                                 }
-                            }
-                            return Single.error(error)
-                        }.flatMap { token -> Single<Token> in
-                            do {
-                                try token.saveInRealm()
-                            } catch let e {
-                                print("Failed to save access token")
-                                return Single.error(e)
-                            }
-                            return Single.just(token)
+                                // Suck it! we don't have the user. Return the error!
+                                throw error
+                            }.flatMap {user -> Single<String> in
+                                do {
+                                    try user.saveInRealm()
+                                } catch let e {
+                                    print("Failed to save access token")
+                                    return Single.error(e)
+                                }
+                                return Single.just(user.token)
+                        }
+                        
+                        // Another Error
+                    } else {
+                        print("This is another server error")
+                        // If we have the user lets try again
+                        if let user = UserService.sharedInstance.getUser() {
+                            return Single.just(user.token)
+                        }
+                        // Suck it! we don't have the user. Return the error!
+                        throw error
                     }
+                } else {
+                    // End of the Road
+                    print("We tried as much as we can")
+                    throw error
+                }
             }
         }
     }
